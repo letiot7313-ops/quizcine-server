@@ -1,6 +1,6 @@
 {
-  "name": "quizcine-server",
-  "version": "4.0.0",
+  "name": "quiz-cine-ws",
+  "version": "1.0.0",
   "type": "module",
   "scripts": {
     "start": "node index.js"
@@ -8,6 +8,6 @@
   "dependencies": {
     "cors": "^2.8.5",
     "express": "^4.19.2",
-    "socket.io": "^4.7.5"
+    "socket.io": "^4.7.2"
   }
 }

@@ -83,7 +83,6 @@ io.on("connection", (socket)=>{
       type:(q.type||"mcq"),
       text:q.question||"",
       image:q.image||"",
-      video:q.video||"",
       choices:Array.isArray(q.choices)? q.choices:[],
       allowChange:true,
       duration:Number(q.duration||30)
@@ -96,12 +95,12 @@ io.on("connection", (socket)=>{
     const code=q.room.toUpperCase();
     const r=ensureRoom(code);
     r.question = {
-      type:(q.type||"mcq"), text:q.text||"", image:q.image||"", video:q.video||"",
+      type:(q.type||"mcq"), text:q.text||"", image:q.image||"",
       choices:Array.isArray(q.choices)? q.choices.filter(Boolean).slice(0,4):[],
       answer:q.answer||"", points:Number(q.points||10), allowChange:!!q.allowChange
     };
     r.accepting=true; r.firstCorrect=null;
-    io.to(code).emit("question", { type:r.question.type, text:r.question.text, image:r.question.image, video:r.question.video, choices:r.question.choices, allowChange:r.question.allowChange });
+    io.to(code).emit("question", { type:r.question.type, text:r.question.text, image:r.question.image, choices:r.question.choices, allowChange:r.question.allowChange });
     io.to(code).emit("accepting",true);
   });
 
@@ -132,8 +131,7 @@ io.on("connection", (socket)=>{
     io.to(code).emit("accepting",false);
     io.to(code).emit("reveal",{
       answer:(r.question&&r.question.answer)||"",
-      answerImage:(r.question&&r.question.answerImage)||"",
-      answerVideo:(r.question&&r.question.answerVideo)||""
+      answerImage:(r.question&&r.question.answerImage)||""
     });
     io.to(code).emit("scores", roomScores(code));
   });

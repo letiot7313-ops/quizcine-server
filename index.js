@@ -1,75 +1,148 @@
-const express = require('express');
-const http = require('http');
-const { Server } = require('socket.io');
-const cors = require('cors');
+import express from "express";
+import cors from "cors";
+import { createServer } from "http";
+import { Server } from "socket.io";
 
 const app = express();
 app.use(cors());
-app.get('/', (req,res)=> res.send('Quiz Cine WS OK'));
+app.get("/", (req, res) => res.send("QuizCine Server OK"));
 
-const server = http.createServer(app);
-const io = new Server(server, {
-  cors: { origin: '*', methods: ['GET','POST'] }
+const httpServer = createServer(app);
+const io = new Server(httpServer, {
+  cors: { origin: "*", methods: ["GET","POST"] }
 });
 
-const rooms = {};
+const rooms = new Map(); // roomCode -> { players: Map(socketId->{name,score,streak}), accepting, question, firstCorrect }
 
-io.on('connection', (socket)=>{
-  socket.on('join', ({room, name})=>{
-    room = (room||'').toUpperCase();
-    if(!room) return;
-    socket.join(room);
-    if(!rooms[room]) rooms[room] = { players:{}, accepting:false, current:null };
-    if(!rooms[room].players[name]) rooms[room].players[name] = { name, score:0, answer:null };
-    socket.emit('joined', true);
-    io.to(room).emit('player-joined', {name});
-    io.to(room).emit('room-info', {scores: rooms[room].players});
-  });
+const norm = (s="") => s.toString().trim().toLowerCase()
+  .normalize("NFD").replace(/[\u0300-\u036f]/g, "");
 
-  socket.on('host-join', ({room})=>{
-    room = (room||'').toUpperCase();
-    socket.join(room);
-    if(!rooms[room]) rooms[room] = { players:{}, accepting:false, current:null };
-    socket.emit('room-info', {scores: rooms[room].players});
-  });
+const STREAK_EVERY = 3;
+const STREAK_BONUS = 5;
+const QUICK_BONUS = 5;
 
-  socket.on('start-question', (q)=>{
-    const room = (q.room||'').toUpperCase();
-    if(!room) return;
-    if(!rooms[room]) rooms[room] = { players:{}, accepting:false, current:null };
-    rooms[room].accepting = true;
-    rooms[room].current = { text:q.text, image:q.image, choices:q.choices, answer:q.answer, points:q.points, allowChange: !!q.allowChange };
-    Object.values(rooms[room].players).forEach(p=> p.answer=null);
-    io.to(room).emit('question', rooms[room].current);
-    io.to(room).emit('accepting', true);
-  });
-
-  socket.on('answer', ({room, name, answer})=>{
-    room = (room||'').toUpperCase();
-    if(!room || !rooms[room] || !rooms[room].accepting) return;
-    const R = rooms[room];
-    if(!R.players[name]) R.players[name]={name, score:0, answer:null};
-    R.players[name].answer = answer;
-    io.to(room).emit('answer-received', {name, answer});
-  });
-
-  socket.on('reveal', ({room})=>{
-    room = (room||'').toUpperCase();
-    if(!room || !rooms[room]) return;
-    const R = rooms[room];
-    if(!R.current) return;
-    R.accepting = false;
-    const correct = (R.current.answer||'').trim().toLowerCase();
-    Object.values(R.players).forEach(p=>{
-      if((p.answer||'').trim().toLowerCase() === correct){
-        p.score += Number(R.current.points||0);
-      }
+function ensureRoom(code){
+  if(!rooms.has(code)){
+    rooms.set(code, {
+      players: new Map(),
+      accepting: false,
+      question: null,
+      firstCorrect: null,
     });
-    io.to(room).emit('accepting', false);
-    io.to(room).emit('reveal', {answer: R.current.answer});
-    io.to(room).emit('scores', R.players);
+  }
+  return rooms.get(code);
+}
+
+function scoresObj(room){
+  const r = ensureRoom(room);
+  const obj = {};
+  for(const [sid,p] of r.players){
+    obj[sid] = { name: p.name, score: p.score|0 };
+  }
+  return obj;
+}
+
+io.on("connection", (socket)=>{
+  socket.on("join", ({room, name})=>{
+    if(!room || !name) return;
+    const code = room.toUpperCase();
+    socket.join(code);
+    const r = ensureRoom(code);
+    r.players.set(socket.id, { name, score: 0, streak: 0 });
+    socket.emit("joined");
+    io.to(code).emit("player-joined", { id: socket.id, name });
+    io.to(code).emit("room-info", { scores: scoresObj(code) });
+  });
+
+  socket.on("host-join", ({room})=>{
+    if(!room) return;
+    const code = room.toUpperCase();
+    socket.join(code);
+    io.to(socket.id).emit("room-info", { scores: scoresObj(code) });
+  });
+
+  socket.on("start-question", (q)=>{
+    if(!q || !q.room) return;
+    const code = q.room.toUpperCase();
+    const r = ensureRoom(code);
+    r.question = {
+      type: (q.type||"mcq"),
+      text: q.text||"",
+      image: q.image||"",
+      choices: Array.isArray(q.choices)? q.choices.filter(Boolean).slice(0,4) : [],
+      answer: q.answer||"",
+      points: Number(q.points||10),
+      allowChange: !!q.allowChange
+    };
+    r.accepting = true;
+    r.firstCorrect = null;
+    io.to(code).emit("question", {
+      type: r.question.type,
+      text: r.question.text,
+      image: r.question.image,
+      choices: r.question.choices,
+      allowChange: r.question.allowChange
+    });
+    io.to(code).emit("accepting", true);
+  });
+
+  socket.on("answer", ({room, name, answer})=>{
+    if(!room) return;
+    const code = room.toUpperCase();
+    const r = ensureRoom(code);
+    if(!r.accepting || !r.question) return;
+    const player = r.players.get(socket.id);
+    if(!player) return;
+    io.to(code).emit("answer-received", { id: socket.id, name: player.name, answer });
+    const q = r.question;
+    const corr = norm(q.answer);
+    let isCorrect = false;
+    if(q.type === "mcq"){
+      if(norm(answer) === corr) isCorrect = true;
+    }else{
+      if(norm(answer) === corr) isCorrect = true;
+    }
+    if(isCorrect){
+      player.score = (player.score||0) + (q.points||0);
+      if(!r.firstCorrect){
+        r.firstCorrect = socket.id;
+        player.score += QUICK_BONUS;
+      }
+      player.streak = (player.streak||0) + 1;
+      if(player.streak >= STREAK_EVERY){
+        player.score += STREAK_BONUS;
+        player.streak = 0;
+      }
+    } else {
+      player.streak = 0;
+    }
+    io.to(code).emit("scores", Object.fromEntries(
+      Array.from(r.players.entries()).map(([sid,p])=>[sid,{name:p.name, score:p.score|0}])
+    ));
+  });
+
+  socket.on("reveal", ({room})=>{
+    if(!room) return;
+    const code = room.toUpperCase();
+    const r = ensureRoom(code);
+    r.accepting = false;
+    io.to(code).emit("accepting", false);
+    io.to(code).emit("reveal");
+    io.to(code).emit("scores", Object.fromEntries(
+      Array.from(r.players.entries()).map(([sid,p])=>[sid,{name:p.name, score:p.score|0}])
+    ));
+  });
+
+  socket.on("disconnect", ()=>{
+    for(const [code, r] of rooms){
+      if(r.players.delete(socket.id)){
+        io.to(code).emit("room-info", { scores: scoresObj(code) });
+      }
+    }
   });
 });
 
-const PORT = process.env.PORT || 3001;
-server.listen(PORT, ()=> console.log('Quiz Cine WS listening on', PORT));
+const PORT = process.env.PORT || 10000;
+httpServer.listen(PORT, ()=>{
+  console.log("QuizCine server listening on", PORT);
+});
